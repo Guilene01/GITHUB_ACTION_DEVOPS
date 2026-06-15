@@ -1,0 +1,14 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars contains sensitive data and should not be committed to git.
+
+aws_region                = "us-east-1"
+profile                   = "default"
+aws_instance_type_server  = "t2.large"
+
+# JFrog Artifactory admin credentials and access token.
+jfrog_secret_username_and_password = ["admin", "REPLACE_WITH_STRONG_PASSWORD"]
+jfrog_secret_token                 = "REPLACE_WITH_JFROG_TOKEN"
+
+# Optional: SonarCloud token (see README for how to generate one).
+# Leave empty to populate the AWS Secrets Manager secret later via the AWS CLI.
+sonarcloud_token = ""

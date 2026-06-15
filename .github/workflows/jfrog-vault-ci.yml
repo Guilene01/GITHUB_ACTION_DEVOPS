@@ -1,0 +1,73 @@
+name: Build, SonarCloud scan, and publish to JFrog
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write   # required to assume the AWS role via OIDC
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history is required for SonarCloud blame data
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Fetch secrets from AWS Secrets Manager
+        run: |
+          JFROG_CREDS=$(aws secretsmanager get-secret-value --secret-id cicd/jfrog-credentials --query SecretString --output text)
+          echo "JFROG_USERNAME=$(echo "$JFROG_CREDS" | jq -r .username)" >> "$GITHUB_ENV"
+          echo "::add-mask::$(echo "$JFROG_CREDS" | jq -r .password)"
+          echo "JFROG_PASSWORD=$(echo "$JFROG_CREDS" | jq -r .password)" >> "$GITHUB_ENV"
+
+          SONAR_TOKEN=$(aws secretsmanager get-secret-value --secret-id cicd/sonarcloud-token --query SecretString --output text | jq -r .SONAR_TOKEN)
+          echo "::add-mask::${SONAR_TOKEN}"
+          echo "SONAR_TOKEN=${SONAR_TOKEN}" >> "$GITHUB_ENV"
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+
+      - name: Build and analyze with SonarCloud
+        run: |
+          mvn -B clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.token=${SONAR_TOKEN}
+
+      - name: Publish artifact to JFrog
+        env:
+          JFROG_URL: ${{ secrets.JFROG_URL }}
+        run: |
+          curl -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
+            -T target/*.jar \
+            "${JFROG_URL}/artifactory/libs-release-local/${{ github.repository }}-${{ github.run_number }}.jar"
+
+      - name: Validate Vault connection
+        env:
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+        run: |
+          echo "Vault address: ${VAULT_ADDR}"
+          echo "Vault role id length: ${#VAULT_ROLE_ID}"
+          echo "Vault secret id length: ${#VAULT_SECRET_ID}"
