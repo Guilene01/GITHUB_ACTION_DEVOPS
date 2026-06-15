@@ -157,22 +157,24 @@ Then run `terraform apply` again. (Be careful: this writes the token into Terraf
 2. Click **New repository secret**:
    - Name: `AWS_ROLE_ARN`
    - Value: the `github_actions_role_arn` output from Step 2 (e.g. `arn:aws:iam::123456789012:role/github-actions-sonarcloud-role`)
-3. Open [sonar-project.properties](sonar-project.properties) in this repo and replace the placeholders with your real values from Step 1:
+3. At the **root of your GitHub repository** (not inside this lab folder — GitHub only runs workflows that live in a top-level `.github/workflows/` directory), create a `sonar-project.properties` file with your real values from Step 1:
 
 ```properties
 sonar.projectKey=your-org_your-repo
 sonar.organization=your-sonarcloud-org
 ```
 
+4. Copy [.github/workflows/sonarcloud.yml](#) from this lab (or the version already placed at your repo root, if you're using this lab as a reference) into your repo's root `.github/workflows/` directory.
+
 ---
 
 ## Step 5 — Push and watch it run
 
-1. Commit and push the contents of this folder to your GitHub repository (including `.github/workflows/sonarcloud.yml` and `sonar-project.properties`).
+1. Commit and push your repo's root `.github/workflows/sonarcloud.yml` and `sonar-project.properties` (these must be at the repo root, not inside `sonarcloud-aws-secrets-lab/`).
 2. Go to the **Actions** tab in your GitHub repository — you should see the **"SonarCloud Scan"** workflow running.
 3. Once it finishes, go to [sonarcloud.io](https://sonarcloud.io) and open your project — you should see your scan results (bugs, code smells, security hotspots, etc.).
 
-Here's what the workflow ([.github/workflows/sonarcloud.yml](.github/workflows/sonarcloud.yml)) does, step by step:
+Here's what the workflow does, step by step:
 
 1. Checks out your code.
 2. Logs in to AWS using OIDC (the `AWS_ROLE_ARN` secret you set in Step 4) — no AWS password involved.
@@ -186,7 +188,7 @@ Here's what the workflow ([.github/workflows/sonarcloud.yml](.github/workflows/s
 - **"Error: An error occurred (AccessDenied)" in the GitHub Actions log** — double check that `AWS_ROLE_ARN` in your repo secrets exactly matches the `github_actions_role_arn` Terraform output, and that `github_org`/`github_repo` in `terraform.tfvars` exactly match your GitHub username/org and repository name.
 - **"ResourceNotFoundException: Secrets Manager can't find the specified secret"** — make sure `terraform apply` completed successfully and that you completed Step 3 (the secret exists, but may have no value yet if you skipped it).
 - **OIDC provider already exists error** — see the note at the end of Step 2.
-- **SonarCloud shows "no analysis yet"** — check the `sonar.projectKey` and `sonar.organization` values in [sonar-project.properties](sonar-project.properties) match exactly what's shown on your SonarCloud project page.
+- **SonarCloud shows "no analysis yet"** — check the `sonar.projectKey` and `sonar.organization` values in your repo root's `sonar-project.properties` match exactly what's shown on your SonarCloud project page.
 
 ---
 
