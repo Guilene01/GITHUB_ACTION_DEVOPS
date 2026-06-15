@@ -141,6 +141,12 @@ The repo root contains a minimal Maven project ([pom.xml](pom.xml), `src/main/ja
 5. Publish the built artifact to JFrog Artifactory
 6. Sanity-check the Vault AppRole credentials
 
+## 8. Enterprise pipeline template (reference)
+
+[.github/workflows/enterprise-pipeline-template.yml](.github/workflows/enterprise-pipeline-template.yml) is a reference template (manually triggered via `workflow_dispatch`, not run on push) showing what a fuller, more "enterprise" CI/CD pipeline looks like in GitHub Actions: Maven build/test, SonarCloud scan + quality gate, Trivy filesystem and image scans, JFrog artifact publish, Docker build/push to ECR, and a Helm chart package/deploy to Kubernetes.
+
+It's not wired up for this repo — use it as a starting point if you extend this project toward a containerized app with a Kubernetes deployment.
+
 ---
 
 For full details and follow-up notes (e.g. scoping down the EC2 IAM role), see [GITHUB_ACTION_DEVOPS/README.md](GITHUB_ACTION_DEVOPS/README.md).

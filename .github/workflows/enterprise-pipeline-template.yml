@@ -1,0 +1,166 @@
+name: Enterprise CI/CD pipeline template
+
+# This is a REFERENCE TEMPLATE, not part of the active CI for this repo.
+# It mirrors a typical enterprise pipeline (Maven build, SonarCloud quality
+# gate, Trivy filesystem/image scans, JFrog artifact publish, Docker build,
+# Helm package, and K8s deploy) using GitHub Actions instead of Jenkins.
+#
+# To use it for a real project:
+#  - rename/adjust the env values below
+#  - add the referenced secrets (JFROG_*, SONAR_TOKEN, KUBE_CONFIG, etc.)
+#    and vars (SONAR_PROJECT_KEY, SONAR_ORGANIZATION)
+#  - remove `workflow_dispatch`-only trigger if you want it to run on push
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ARTIFACTORY_URL: https://artifactory.example.com/artifactory
+  ARTIFACTORY_REPO: my-repo
+  APP_NAME: my-app
+  ECR_REPO_URL: public.ecr.aws/example
+  HELM_CHART_DIR: my-app-chart
+  K8S_NAMESPACE: dev
+  SONAR_HOST_URL: https://sonarcloud.io
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Unit tests
+        run: mvn -B clean compile test
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+
+      - name: SonarCloud scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=${{ env.SONAR_HOST_URL }} \
+            -Dsonar.token=${SONAR_TOKEN}
+
+      - name: Quality gate check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        with:
+          scanMetadataReportFile: target/sonar/report-task.txt
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          format: table
+          output: maven_dependency.html
+
+      - name: Package
+        run: mvn -B package -DskipTests
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  publish-to-jfrog:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Upload jar to JFrog
+        env:
+          JFROG_USER: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+        run: |
+          curl -u "${JFROG_USER}:${JFROG_PASSWORD}" \
+            -T target/*.jar \
+            "${{ env.ARTIFACTORY_URL }}/${{ env.ARTIFACTORY_REPO }}/release_${{ github.run_id }}.jar"
+
+  docker-build-and-scan:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Build Docker image
+        run: |
+          docker build --no-cache \
+            -t ${{ env.ECR_REPO_URL }}/${{ env.APP_NAME }}:latest \
+            -t ${{ env.ECR_REPO_URL }}/${{ env.APP_NAME }}:${{ github.run_id }} .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REPO_URL }}/${{ env.APP_NAME }}:${{ github.run_id }}
+          format: table
+          output: docker_image_report.html
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Push image to ECR
+        run: |
+          aws ecr-public get-login-password --region ${{ env.AWS_REGION }} \
+            | docker login --username AWS --password-stdin ${{ env.ECR_REPO_URL }}
+          docker push ${{ env.ECR_REPO_URL }}/${{ env.APP_NAME }}:latest
+          docker push ${{ env.ECR_REPO_URL }}/${{ env.APP_NAME }}:${{ github.run_id }}
+
+  deploy-to-k8s:
+    needs: docker-build-and-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Helm chart image tag
+        run: |
+          sed -i "s/tag:.*/tag: \"${{ github.run_id }}\"/" ${{ env.HELM_CHART_DIR }}/values.yaml
+
+      - name: Package Helm chart
+        run: helm package ${{ env.HELM_CHART_DIR }}
+
+      - name: Upload Helm package to JFrog
+        env:
+          JFROG_USER: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+        run: |
+          curl -u "${JFROG_USER}:${JFROG_PASSWORD}" \
+            -T ${{ env.APP_NAME }}-*.tgz \
+            "${{ env.ARTIFACTORY_URL }}/${{ env.ARTIFACTORY_REPO }}/helm/${{ env.APP_NAME }}-${{ github.run_id }}.tgz"
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install ${{ env.APP_NAME }} ${{ env.HELM_CHART_DIR }} -n ${{ env.K8S_NAMESPACE }}
