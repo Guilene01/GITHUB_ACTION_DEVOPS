@@ -9,6 +9,6 @@ class AppTest {
     @Test
     void greetReturnsExpectedMessage() {
         App app = new App();
-        assertEquals("Hello, DevOps!", app.greet("DevOps"));
+        assertEquals("Hello world, DevOps!", app.greet("DevOps"));
     }
 }
