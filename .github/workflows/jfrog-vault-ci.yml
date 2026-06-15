@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build-and-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -29,13 +29,8 @@ jobs:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Fetch secrets from AWS Secrets Manager
+      - name: Fetch SonarCloud token from AWS Secrets Manager
         run: |
-          JFROG_CREDS=$(aws secretsmanager get-secret-value --secret-id cicd/jfrog-credentials --query SecretString --output text)
-          echo "JFROG_USERNAME=$(echo "$JFROG_CREDS" | jq -r .username)" >> "$GITHUB_ENV"
-          echo "::add-mask::$(echo "$JFROG_CREDS" | jq -r .password)"
-          echo "JFROG_PASSWORD=$(echo "$JFROG_CREDS" | jq -r .password)" >> "$GITHUB_ENV"
-
           SONAR_TOKEN=$(aws secretsmanager get-secret-value --secret-id cicd/sonarcloud-token --query SecretString --output text | jq -r .SONAR_TOKEN)
           echo "::add-mask::${SONAR_TOKEN}"
           echo "SONAR_TOKEN=${SONAR_TOKEN}" >> "$GITHUB_ENV"
@@ -54,6 +49,35 @@ jobs:
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${SONAR_TOKEN}
 
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  publish-to-jfrog:
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Fetch JFrog credentials from AWS Secrets Manager
+        run: |
+          JFROG_CREDS=$(aws secretsmanager get-secret-value --secret-id cicd/jfrog-credentials --query SecretString --output text)
+          echo "JFROG_USERNAME=$(echo "$JFROG_CREDS" | jq -r .username)" >> "$GITHUB_ENV"
+          echo "::add-mask::$(echo "$JFROG_CREDS" | jq -r .password)"
+          echo "JFROG_PASSWORD=$(echo "$JFROG_CREDS" | jq -r .password)" >> "$GITHUB_ENV"
+
       - name: Publish artifact to JFrog
         env:
           JFROG_URL: ${{ secrets.JFROG_URL }}
@@ -62,6 +86,10 @@ jobs:
             -T target/*.jar \
             "${JFROG_URL}/artifactory/libs-release-local/${{ github.repository }}-${{ github.run_number }}.jar"
 
+  validate-vault:
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    steps:
       - name: Validate Vault connection
         env:
           VAULT_ADDR: ${{ secrets.VAULT_ADDR }}

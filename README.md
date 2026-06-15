@@ -124,7 +124,14 @@ The JFrog credentials secret (`cicd/jfrog-credentials`) is filled in automatical
    - `VAULT_ADDR` → from the `vault_url` output
    - `VAULT_ROLE_ID` / `VAULT_SECRET_ID` → from `vaultkey.txt`
 
-## 6. Pipeline
+## 6. Sample application
+
+The repo root contains a minimal Maven project ([pom.xml](pom.xml), `src/main/java`, `src/test/java`) that gives the pipeline something real to build, scan, and publish:
+
+- `com.devops.utrains:devops-utrains-app` — a single `App` class with one method and a JUnit 5 test
+- `mvn clean verify` builds `target/devops-utrains-app-1.0.0.jar`, which is what step 5 of the pipeline below publishes to JFrog
+
+## 7. Pipeline
 
 [.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml) runs on every push to `main`:
 1. Checkout + Java 17 setup
