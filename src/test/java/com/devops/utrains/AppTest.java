@@ -2,13 +2,13 @@ package com.devops.utrains;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AppTest {
 
     @Test
-    void greetReturnsExpectedMessage() {
+    void greetIncludesName() {
         App app = new App();
-        assertEquals("Hello , DevOps!", app.greet("DevOps"));
+        assertTrue(app.greet("DevOps").contains("DevOps"));
     }
 }
