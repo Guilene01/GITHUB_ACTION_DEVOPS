@@ -12,3 +12,7 @@ jfrog_secret_token                 = "REPLACE_WITH_JFROG_TOKEN"
 # Optional: SonarCloud token (see README for how to generate one).
 # Leave empty to populate the AWS Secrets Manager secret later via the AWS CLI.
 sonarcloud_token = ""
+
+# Used to scope the GitHub Actions OIDC role to this repo's main branch.
+github_org  = "your-github-username-or-org"
+github_repo = "your-repo-name"

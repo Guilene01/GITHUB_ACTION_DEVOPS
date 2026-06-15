@@ -35,3 +35,14 @@ variable "sonarcloud_token" {
   default     = ""
   sensitive   = true
 }
+
+# Used by oidc.tf to scope the GitHub Actions OIDC role to this repo's main branch.
+variable "github_org" {
+  description = "Your GitHub username or organization (e.g. \"octocat\")"
+  type        = string
+}
+
+variable "github_repo" {
+  description = "The repository that will run the GitHub Actions workflow (e.g. \"my-app\")"
+  type        = string
+}

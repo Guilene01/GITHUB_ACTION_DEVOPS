@@ -20,6 +20,10 @@ This is the **canonical** infrastructure module for the repo: a Terraform-provis
   - `cicd/jfrog-credentials` – JFrog username/password/token
   - `cicd/sonarcloud-token` – SonarCloud token (populated once you've generated one, see below)
 
+### CI/CD OIDC role ([oidc.tf](oidc.tf))
+- An IAM role (`github-actions-cicd-role`) that the GitHub Actions pipeline assumes via OIDC, scoped to this repo's `main` branch
+- A policy letting that role read only the two secrets above
+
 ### Bootstrap scripts (`installations_scripts/`)
 The instance is provisioned over SSH and runs these scripts in order:
 
@@ -110,58 +114,25 @@ The JFrog credentials secret (`cicd/jfrog-credentials`) is populated automatical
 
 ## 6. Letting GitHub Actions read the secrets (OIDC, no static AWS keys)
 
-1. **Create an OIDC identity provider** in IAM for GitHub Actions (one-time per AWS account):
-   ```bash
-   aws iam create-open-id-connect-provider \
-     --url https://token.actions.githubusercontent.com \
-     --client-id-list sts.amazonaws.com \
-     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-   ```
+[oidc.tf](oidc.tf) creates the IAM role and policy that the pipeline assumes via OIDC:
 
-2. **Create an IAM role** that trusts GitHub Actions for this repo:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Principal": {
-           "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
-         },
-         "Action": "sts:AssumeRoleWithWebIdentity",
-         "Condition": {
-           "StringEquals": {
-             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-           },
-           "StringLike": {
-             "token.actions.githubusercontent.com:sub": "repo:<github-org>/<repo-name>:ref:refs/heads/main"
-           }
-         }
-       }
-     ]
-   }
-   ```
+- A role (`github-actions-cicd-role`) that trusts GitHub Actions, but only for this repo's `main` branch (`var.github_org` / `var.github_repo` in `terraform.tfvars`)
+- A policy that lets it `secretsmanager:GetSecretValue` on exactly the two secrets above — nothing else
 
-3. **Attach a least-privilege policy** that only allows reading these two secrets:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": ["secretsmanager:GetSecretValue"],
-         "Resource": [
-           "arn:aws:secretsmanager:us-east-1:<account-id>:secret:cicd/jfrog-credentials-*",
-           "arn:aws:secretsmanager:us-east-1:<account-id>:secret:cicd/sonarcloud-token-*"
-         ]
-       }
-     ]
-   }
-   ```
+> **One-time per AWS account**: an account can only have ONE GitHub OIDC identity provider. `oidc.tf` reuses an existing one via a `data` lookup. If your account doesn't have one yet, create it first:
+> ```bash
+> aws iam create-open-id-connect-provider \
+>   --url https://token.actions.githubusercontent.com \
+>   --client-id-list sts.amazonaws.com \
+>   --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+> ```
+> Then `terraform apply` will pick it up automatically.
 
-4. **Store the role ARN as a GitHub secret**: `Settings → Secrets and variables → Actions → New repository secret` → `AWS_OIDC_ROLE_ARN` = the role's ARN.
+After `terraform apply`:
 
-5. **Remaining repository secrets** used by the workflow (not stored in AWS Secrets Manager, since they're connection details rather than credentials):
+1. **Store the role ARN as a GitHub secret**: `Settings → Secrets and variables → Actions → New repository secret` → `AWS_OIDC_ROLE_ARN` = the `github_actions_role_arn` output.
+
+2. **Remaining repository secrets** used by the workflow (not stored in AWS Secrets Manager, since they're connection details rather than credentials):
    - `JFROG_URL` – from the `artifactory_url` Terraform output
    - `VAULT_ADDR` – from the `vault_url` Terraform output
    - `VAULT_ROLE_ID` / `VAULT_SECRET_ID` – from `vaultkey.txt`

@@ -21,3 +21,8 @@ output "jfrog_credentials_secret_arn" {
 output "sonarcloud_token_secret_arn" {
   value = aws_secretsmanager_secret.sonarcloud_token.arn
 }
+
+output "github_actions_role_arn" {
+  description = "Put this in your GitHub repo secret AWS_OIDC_ROLE_ARN"
+  value       = aws_iam_role.github_actions.arn
+}
