@@ -5,7 +5,6 @@ on:
     branches: [main]
 
 permissions:
-  id-token: write   # required to assume the AWS role via OIDC
   contents: read
 
 jobs:
@@ -15,25 +14,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history is required for SonarCloud blame data
+          fetch-depth: 0 # full history required for SonarCloud blame data
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Fetch SonarCloud token from AWS Secrets Manager
-        run: |
-          SONAR_TOKEN=$(aws secretsmanager get-secret-value --secret-id cicd/sonarcloud-token --query SecretString --output text | jq -r .SONAR_TOKEN)
-          echo "::add-mask::${SONAR_TOKEN}"
-          echo "SONAR_TOKEN=${SONAR_TOKEN}" >> "$GITHUB_ENV"
 
       - name: Cache SonarCloud packages
         uses: actions/cache@v4
@@ -42,6 +29,8 @@ jobs:
           key: ${{ runner.os }}-sonar
 
       - name: Build and analyze with SonarCloud
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           mvn -B clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
@@ -65,18 +54,26 @@ jobs:
           name: app-jar
           path: target
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Fetch JFrog credentials from AWS Secrets Manager
+      - name: Fetch JFrog credentials from Vault
+        env:
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
         run: |
-          JFROG_CREDS=$(aws secretsmanager get-secret-value --secret-id cicd/jfrog-credentials --query SecretString --output text)
-          echo "JFROG_USERNAME=$(echo "$JFROG_CREDS" | jq -r .username)" >> "$GITHUB_ENV"
-          echo "::add-mask::$(echo "$JFROG_CREDS" | jq -r .password)"
-          echo "JFROG_PASSWORD=$(echo "$JFROG_CREDS" | jq -r .password)" >> "$GITHUB_ENV"
+          VAULT_TOKEN=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+            | jq -r .auth.client_token)
+          echo "::add-mask::${VAULT_TOKEN}"
+
+          JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog" | jq -r .data)
+
+          JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .username)
+          JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .password)
+          echo "::add-mask::${JFROG_PASSWORD}"
+
+          echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
+          echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
 
       - name: Publish artifact to JFrog
         env:
@@ -90,12 +87,20 @@ jobs:
     needs: build-and-scan
     runs-on: ubuntu-latest
     steps:
-      - name: Validate Vault connection
+      - name: Authenticate and verify Vault secret path
         env:
           VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
           VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
           VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
         run: |
-          echo "Vault address: ${VAULT_ADDR}"
-          echo "Vault role id length: ${#VAULT_ROLE_ID}"
-          echo "Vault secret id length: ${#VAULT_SECRET_ID}"
+          VAULT_TOKEN=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
+            | jq -r .auth.client_token)
+          echo "::add-mask::${VAULT_TOKEN}"
+          echo "Vault AppRole authentication: OK"
+
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
+          echo "secrets/creds/jfrog HTTP status: ${STATUS}"
+          [ "${STATUS}" = "200" ] && echo "Vault secret path: OK" || (echo "Vault secret path: FAILED" && exit 1)

@@ -1,6 +1,6 @@
 # DEVOPS-UTRAINS
 
-A Terraform + GitHub Actions setup that provisions a small AWS "tools" server for a CI/CD pipeline: build code, scan it with SonarCloud, publish artifacts to JFrog, and manage secrets with HashiCorp Vault and AWS Secrets Manager.
+A Terraform + GitHub Actions setup that provisions a small AWS "tools" server for a CI/CD pipeline: build code, scan it with SonarCloud, publish artifacts to JFrog, and manage secrets with HashiCorp Vault.
 
 All active code lives in [GITHUB_ACTION_DEVOPS/](GITHUB_ACTION_DEVOPS/), plus the sample Java app at the repo root ([pom.xml](pom.xml), `src/`) and the GitHub Actions workflows in [.github/workflows/](.github/workflows/).
 
@@ -10,17 +10,21 @@ Running `terraform apply` in `GITHUB_ACTION_DEVOPS/` creates:
 
 - A VPC + public subnet + Internet Gateway
 - A security group opening `22` (SSH), `80` (HTTP), `8082` (JFrog), `4954` (Trivy), `8200` (Vault)
-- One EC2 instance (Amazon Linux 2023, `t2.large`) that gets bootstrapped over SSH with:
+- One EC2 instance (Amazon Linux 2023, `t2.large`) bootstrapped over SSH with:
   - **Docker**
   - **Java 17 + Maven** (required by Artifactory)
   - **JFrog Artifactory OSS** — artifact repository, served on port `8082`
   - **Trivy** — image/dependency vulnerability scanner
-  - **HashiCorp Vault** — stores the JFrog credentials in its KV store and creates a `github-actions` AppRole so the pipeline can authenticate
-- Two **AWS Secrets Manager** secrets ([secrets.tf](GITHUB_ACTION_DEVOPS/secrets.tf)):
-  - `cicd/jfrog-credentials` — JFrog username/password/token
-  - `cicd/sonarcloud-token` — SonarCloud token (see step 3 below)
+  - **HashiCorp Vault** — stores JFrog credentials at `secrets/creds/jfrog` and creates a `github-actions` AppRole so the pipeline can authenticate at runtime
+- A GitHub Actions **OIDC IAM role** ([oidc.tf](GITHUB_ACTION_DEVOPS/oidc.tf)) scoped to this repo's `main` branch — available for future pipeline steps that need AWS access
 
-The actual CI/CD work — build, **SonarCloud** scan, publish to JFrog — happens in **GitHub Actions** ([.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml)), not on the EC2 box. The box just hosts JFrog/Vault/Trivy and acts as the secret store backend.
+**Secret storage strategy:**
+| Secret | Where it lives |
+|---|---|
+| JFrog username / password | HashiCorp Vault (`secrets/creds/jfrog`) |
+| SonarCloud token | GitHub Actions repository secret (`SONAR_TOKEN`) |
+
+The actual CI/CD work — build, **SonarCloud** scan, publish to JFrog — happens in **GitHub Actions** ([.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml)), not on the EC2 box.
 
 ## 2. Deploy the infrastructure
 
@@ -33,118 +37,69 @@ terraform apply
 
 After apply, note the outputs:
 - `artifactory_url`, `vault_url`, `ssh_connection`
-- `vault_key_file` → `vaultkey.txt` is copied locally; it contains the Vault root token/unseal key plus the AppRole **Role ID** and **Secret ID**
-- `jfrog_credentials_secret_arn`, `sonarcloud_token_secret_arn`
+- `vault_key_file` → `vaultkey.txt` is written locally; contains the Vault unseal key, root token, AppRole **Role ID** and **Secret ID**
+- `github_actions_role_arn` → put this in your GitHub repo secret `AWS_OIDC_ROLE_ARN` (for future use)
+
+The `jfrog_default_credentials` output shows the default JFrog login (`admin` / `password`). Change the password on first login to match what you set in `terraform.tfvars`.
 
 ## 3. Create a SonarCloud account and project
 
-1. Go to [sonarcloud.io](https://sonarcloud.io) and click **Log in**.
-2. Sign up / log in with your **GitHub** account — SonarCloud authenticates via your VCS provider.
-3. Authorize SonarCloud to access your GitHub account/organization when prompted.
-4. Create a new **Organization** in SonarCloud (it can mirror your GitHub org/username — free tier covers public repos).
-5. Click **+ → Analyze new project**, select this repository, and import it.
-6. Note the generated **Project Key** and **Organization Key**.
-7. In your GitHub repo, go to **Settings → Secrets and variables → Actions → Variables** and add:
+1. Go to [sonarcloud.io](https://sonarcloud.io) and click **Log in** with your GitHub account.
+2. Create a new **Organization** (free tier covers public repos).
+3. Click **+ → Analyze new project**, select this repository, and import it.
+4. Note the **Organization Key** (lowercase, shown under the org name) and **Project Key**.
+5. In your GitHub repo: **Settings → Secrets and variables → Actions → Variables** and add:
    - `SONAR_PROJECT_KEY`
    - `SONAR_ORGANIZATION`
 
-### Generate the token
-1. In SonarCloud: avatar (top right) → **My Account** → **Security**.
-2. Under **Generate Tokens**, name it (e.g. `github-actions-token`), set an expiration, click **Generate**.
-3. **Copy the token now** — it's shown only once.
+### Generate the SonarCloud token
+1. SonarCloud: avatar → **My Account** → **Security**.
+2. Under **Generate Tokens**, name it (e.g. `github-actions-token`), click **Generate**.
+3. **Copy the token now** — it is shown only once.
 
-## 4. Store the SonarCloud token in AWS Secrets Manager
+## 4. Configure GitHub Actions secrets
 
-The secret `cicd/sonarcloud-token` is already created by Terraform (empty until you populate it). Two ways to fill it in:
+Go to **Settings → Secrets and variables → Actions → Secrets** and add:
 
-**Option A — Terraform** (edit `terraform.tfvars` then re-apply):
-```hcl
-sonarcloud_token = "<the token you copied>"
-```
-```bash
-terraform apply
-```
+| Secret | Value |
+|---|---|
+| `SONAR_TOKEN` | SonarCloud token from step 3 |
+| `JFROG_URL` | `artifactory_url` Terraform output |
+| `VAULT_ADDR` | `vault_url` Terraform output |
+| `VAULT_ROLE_ID` | Role ID from `vaultkey.txt` |
+| `VAULT_SECRET_ID` | Secret ID from `vaultkey.txt` |
 
-**Option B — AWS CLI** (no re-apply, good for rotation):
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id cicd/sonarcloud-token \
-  --secret-string '{"SONAR_TOKEN":"<the token you copied>"}'
-```
-
-The JFrog credentials secret (`cicd/jfrog-credentials`) is filled in automatically from `terraform.tfvars` during `apply`.
-
-## 5. Let GitHub Actions read the secrets (OIDC, no static AWS keys)
-
-1. **Create the OIDC provider** (one-time per AWS account):
-   ```bash
-   aws iam create-open-id-connect-provider \
-     --url https://token.actions.githubusercontent.com \
-     --client-id-list sts.amazonaws.com \
-     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-   ```
-
-2. **Create an IAM role** trusting GitHub Actions for this repo's `main` branch:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com" },
-       "Action": "sts:AssumeRoleWithWebIdentity",
-       "Condition": {
-         "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-         "StringLike": { "token.actions.githubusercontent.com:sub": "repo:<github-org>/<repo-name>:ref:refs/heads/main" }
-       }
-     }]
-   }
-   ```
-
-3. **Attach a least-privilege policy** scoped to just the two secrets:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Action": ["secretsmanager:GetSecretValue"],
-       "Resource": [
-         "arn:aws:secretsmanager:us-east-1:<account-id>:secret:cicd/jfrog-credentials-*",
-         "arn:aws:secretsmanager:us-east-1:<account-id>:secret:cicd/sonarcloud-token-*"
-       ]
-     }]
-   }
-   ```
-
-4. Add the role ARN as a GitHub repo secret: `AWS_OIDC_ROLE_ARN`.
-
-5. Add the remaining repo secrets (connection info, not credentials):
-   - `JFROG_URL` → from the `artifactory_url` output
-   - `VAULT_ADDR` → from the `vault_url` output
-   - `VAULT_ROLE_ID` / `VAULT_SECRET_ID` → from `vaultkey.txt`
-
-## 6. Sample application
+## 5. Sample application
 
 The repo root contains a minimal Maven project ([pom.xml](pom.xml), `src/main/java`, `src/test/java`) that gives the pipeline something real to build, scan, and publish:
 
-- `com.devops.utrains:devops-utrains-app` — a single `App` class with one method and a JUnit 5 test
-- `mvn clean verify` builds `target/devops-utrains-app-1.0.0.jar`, which is what step 5 of the pipeline below publishes to JFrog
+- `com.devops.utrains:devops-utrains-app` — a single `App` class with a JUnit 5 test
+- `mvn clean verify` builds `target/devops-utrains-app-1.0.0.jar`, which the pipeline publishes to JFrog
 
-## 7. Pipeline
+## 6. Pipeline
 
-[.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml) runs on every push to `main`:
+[.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml) runs on every push to `main` with three parallel jobs after the build:
+
+**`build-and-scan`**
 1. Checkout + Java 17 setup
-2. Assume the AWS role via OIDC
-3. Fetch JFrog creds + SonarCloud token from Secrets Manager
-4. `mvn clean verify sonar:sonar` against SonarCloud
-5. Publish the built artifact to JFrog Artifactory
-6. Sanity-check the Vault AppRole credentials
+2. `mvn clean verify sonar:sonar` — builds, tests, and scans with SonarCloud (token from `SONAR_TOKEN` secret)
+3. Uploads the built jar as a workflow artifact
 
-## 8. Enterprise pipeline template (reference)
+**`publish-to-jfrog`** _(runs after build-and-scan)_
+1. Downloads the jar artifact
+2. Authenticates to Vault via AppRole, reads JFrog credentials from `secrets/creds/jfrog`
+3. Publishes the jar to JFrog Artifactory
 
-[.github/workflows/enterprise-pipeline-template.yml](.github/workflows/enterprise-pipeline-template.yml) is a reference template (manually triggered via `workflow_dispatch`, not run on push) showing what a fuller, more "enterprise" CI/CD pipeline looks like in GitHub Actions: Maven build/test, SonarCloud scan + quality gate, Trivy filesystem and image scans, JFrog artifact publish, Docker build/push to ECR, and a Helm chart package/deploy to Kubernetes.
+**`validate-vault`** _(runs in parallel with publish-to-jfrog)_
+1. Authenticates to Vault via AppRole
+2. Verifies `secrets/creds/jfrog` path is readable — fails the job if not
 
-It's not wired up for this repo — use it as a starting point if you extend this project toward a containerized app with a Kubernetes deployment.
+## 7. Enterprise pipeline template (reference)
+
+[.github/workflows/enterprise-pipeline-template.yml](.github/workflows/enterprise-pipeline-template.yml) is a reference template (manually triggered via `workflow_dispatch`, not run on push) showing a fuller enterprise-style pipeline in GitHub Actions: Maven build/test, SonarCloud scan + quality gate, Trivy filesystem and image scans, JFrog artifact publish, Docker build/push to ECR, and Helm chart package/deploy to Kubernetes.
+
+Use it as a starting point if you extend this project toward a containerized app with a Kubernetes deployment.
 
 ---
 
-For full details and follow-up notes (e.g. scoping down the EC2 IAM role), see [GITHUB_ACTION_DEVOPS/README.md](GITHUB_ACTION_DEVOPS/README.md).
+For infrastructure details see [GITHUB_ACTION_DEVOPS/README.md](GITHUB_ACTION_DEVOPS/README.md).
