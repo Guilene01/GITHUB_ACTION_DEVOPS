@@ -60,16 +60,25 @@ jobs:
           VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
           VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
         run: |
-          VAULT_TOKEN=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-            | jq -r .auth.client_token)
+          set -o pipefail
+
+          VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
+          VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
+          if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
+            echo "ERROR: Vault AppRole authentication failed — check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID secrets"
+            exit 1
+          fi
           echo "::add-mask::${VAULT_TOKEN}"
 
           JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog" | jq -r .data)
-
-          JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .username)
-          JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .password)
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
+          JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
+          JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
+          if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
+            echo "ERROR: Failed to fetch JFrog credentials from Vault path secrets/creds/jfrog"
+            exit 1
+          fi
           echo "::add-mask::${JFROG_PASSWORD}"
 
           echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
@@ -93,13 +102,19 @@ jobs:
           VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
           VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
         run: |
-          VAULT_TOKEN=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}" \
-            | jq -r .auth.client_token)
+          set -o pipefail
+
+          VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
+          VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
+          if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
+            echo "ERROR: Vault AppRole authentication failed — check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID secrets"
+            exit 1
+          fi
           echo "::add-mask::${VAULT_TOKEN}"
           echo "Vault AppRole authentication: OK"
 
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "X-Vault-Token: ${VAULT_TOKEN}" \
             "${VAULT_ADDR}/v1/secrets/creds/jfrog")
           echo "secrets/creds/jfrog HTTP status: ${STATUS}"
