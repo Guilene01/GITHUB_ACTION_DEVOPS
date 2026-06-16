@@ -29,13 +29,6 @@ variable "jfrog_secret_token" {
   sensitive   = true
 }
 
-variable "sonarcloud_token" {
-  description = "SonarCloud token used by the GitHub Actions pipeline. Leave empty to populate the secret later via the AWS CLI."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 # Used by oidc.tf to scope the GitHub Actions OIDC role to this repo's main branch.
 variable "github_org" {
   description = "Your GitHub username or organization (e.g. \"octocat\")"

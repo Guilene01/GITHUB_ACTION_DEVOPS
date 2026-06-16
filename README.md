@@ -2,7 +2,7 @@
 
 A Terraform + GitHub Actions setup that provisions a small AWS "tools" server for a CI/CD pipeline: build code, scan it with SonarCloud, publish artifacts to JFrog, and manage secrets with HashiCorp Vault and AWS Secrets Manager.
 
-All active code lives in [GITHUB_ACTION_DEVOPS/](GITHUB_ACTION_DEVOPS/). Everything else is in [legacy/](legacy/) (old Jenkins/SonarQube experiments, kept for reference only — not used by anything below).
+All active code lives in [GITHUB_ACTION_DEVOPS/](GITHUB_ACTION_DEVOPS/), plus the sample Java app at the repo root ([pom.xml](pom.xml), `src/`) and the GitHub Actions workflows in [.github/workflows/](.github/workflows/).
 
 ## 1. What this code does
 
@@ -21,8 +21,6 @@ Running `terraform apply` in `GITHUB_ACTION_DEVOPS/` creates:
   - `cicd/sonarcloud-token` — SonarCloud token (see step 3 below)
 
 The actual CI/CD work — build, **SonarCloud** scan, publish to JFrog — happens in **GitHub Actions** ([.github/workflows/jfrog-vault-ci.yml](.github/workflows/jfrog-vault-ci.yml)), not on the EC2 box. The box just hosts JFrog/Vault/Trivy and acts as the secret store backend.
-
-There is **no Jenkins and no self-hosted SonarQube** in this active path — those only exist in `legacy/` from earlier iterations of this repo.
 
 ## 2. Deploy the infrastructure
 

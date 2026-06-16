@@ -41,22 +41,6 @@ resource "aws_iam_role" "github_actions" {
   })
 }
 
-# The role can only read the two CI/CD secrets — nothing else.
-resource "aws_iam_role_policy" "read_cicd_secrets" {
-  name = "read-cicd-secrets"
-  role = aws_iam_role.github_actions.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
-          aws_secretsmanager_secret.jfrog_credentials.arn,
-          aws_secretsmanager_secret.sonarcloud_token.arn,
-        ]
-      }
-    ]
-  })
-}
+# No Secrets Manager policy needed — JFrog creds are fetched from Vault,
+# SonarCloud token is a GitHub Actions secret. The OIDC role above is kept
+# in case AWS access is needed in a future pipeline step.
