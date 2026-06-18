@@ -41,6 +41,3 @@ resource "aws_iam_role" "github_actions" {
   })
 }
 
-# No Secrets Manager policy needed — JFrog creds are fetched from Vault,
-# SonarCloud token is a GitHub Actions secret. The OIDC role above is kept
-# in case AWS access is needed in a future pipeline step.
