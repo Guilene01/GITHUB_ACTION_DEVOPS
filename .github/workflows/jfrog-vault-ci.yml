@@ -19,7 +19,7 @@ env:
   VAULT_JFROG_PATH: secrets/creds/jfrog
 
   JFROG_ARTIFACTORY_URL: ${{ secrets.JFROG_URL }}
-  JFROG_REPO: example-repo-local
+  JFROG_REPO: project-app
 
 jobs:
   build:
@@ -169,7 +169,7 @@ jobs:
 
           REPO_NAME="${{ github.event.repository.name }}"
           RUN_NUMBER="${{ github.run_number }}"
-          ARTIFACT_NAME="${REPO_NAME}-${RUN_NUMBER}.jar"
+          ARTIFACT_NAME="app.jar"
           TARGET_PATH="${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
 
           echo "Uploading ${JAR_FILE} to ${TARGET_PATH}..."
@@ -177,3 +177,10 @@ jobs:
           jf rt upload "${JAR_FILE}" "${TARGET_PATH}"
 
           echo "Uploaded to: ${JFROG_ARTIFACTORY_URL}/${TARGET_PATH}"
+
+      - name: Verify artifact exists in JFrog
+        run: |
+          set -e
+          REPO_NAME="${{ github.event.repository.name }}"
+          RUN_NUMBER="${{ github.run_number }}"
+          jf rt search "${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/app.jar"
