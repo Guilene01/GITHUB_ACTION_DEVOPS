@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history required for SonarCloud blame data
+          fetch-depth: 0
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -38,14 +38,15 @@ jobs:
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
             -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.token=${SONAR_TOKEN}
+            -Dsonar.token=${SONAR_TOKEN} \
+            -Dsonar.branch.name=main
 
       - name: Select build jar
         id: jarcheck
         run: |
           JAR_FILE=$(ls target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc' | head -1)
           if [ -z "${JAR_FILE}" ]; then
-            echo "ERROR: no build jar found in target/ (build may have failed or skipped packaging)"
+            echo "ERROR: no build jar found in target/"
             exit 1
           fi
           echo "jar_path=${JAR_FILE}" >> "$GITHUB_OUTPUT"
@@ -74,11 +75,8 @@ jobs:
   validate-vault:
     needs: trivy-scan
     runs-on: ubuntu-latest
-    outputs:
-      jfrog_username: ${{ steps.vault.outputs.username }}
     steps:
       - name: Authenticate and fetch JFrog credentials from Vault
-        id: vault
         env:
           VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
           VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
@@ -87,33 +85,31 @@ jobs:
           set -o pipefail
 
           VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}") || {
-            echo "ERROR: Vault AppRole login request failed (network/HTTP error)"; exit 1; }
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
 
           VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
+
           if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
-            echo "ERROR: Vault AppRole authentication failed — check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID secrets"
+            echo "ERROR: Vault AppRole authentication failed"
             exit 1
           fi
+
           echo "::add-mask::${VAULT_TOKEN}"
           echo "Vault AppRole authentication: OK"
 
           JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog") || {
-            echo "ERROR: Vault request to secrets/creds/jfrog failed (network/HTTP error)"; exit 1; }
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
 
           JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
           JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
+
           if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
-            echo "ERROR: Failed to fetch JFrog credentials from Vault path secrets/creds/jfrog"
+            echo "ERROR: Failed to fetch JFrog credentials from Vault"
             exit 1
           fi
+
           echo "::add-mask::${JFROG_PASSWORD}"
           echo "Vault secret path: OK"
-
-          echo "username=${JFROG_USERNAME}" >> "$GITHUB_OUTPUT"
-          echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
-          echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
 
   publish-to-jfrog:
     needs: validate-vault
@@ -134,28 +130,29 @@ jobs:
           set -o pipefail
 
           VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}") || {
-            echo "ERROR: Vault AppRole login request failed"; exit 1; }
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
 
           VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
+
           if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
             echo "ERROR: Vault AppRole authentication failed"
             exit 1
           fi
+
           echo "::add-mask::${VAULT_TOKEN}"
 
           JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog") || {
-            echo "ERROR: Vault request to secrets/creds/jfrog failed"; exit 1; }
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
 
           JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
           JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
+
           if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
             echo "ERROR: Failed to fetch JFrog credentials from Vault"
             exit 1
           fi
-          echo "::add-mask::${JFROG_PASSWORD}"
 
+          echo "::add-mask::${JFROG_PASSWORD}"
           echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
           echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
 
@@ -163,8 +160,19 @@ jobs:
         env:
           JFROG_URL: ${{ secrets.JFROG_URL }}
         run: |
+          ls -lah target
+
           JAR_FILE=$(ls target/*.jar | grep -v -E 'sources|javadoc' | head -1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: No jar file found"
+            exit 1
+          fi
+
           REPO_NAME="${{ github.event.repository.name }}"
-          curl -sf -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
+
+          echo "Uploading $JAR_FILE to JFrog..."
+
+          curl -v -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
             -T "${JAR_FILE}" \
             "${JFROG_URL}/artifactory/libs-release-local/${REPO_NAME}/${{ github.run_number }}/${REPO_NAME}-${{ github.run_number }}.jar"
