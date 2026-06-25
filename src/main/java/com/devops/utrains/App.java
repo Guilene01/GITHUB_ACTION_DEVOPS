@@ -3,6 +3,11 @@ package com.utrains.devops;
 import static spark.Spark.*;
 
 public class App {
+
+    public String greet(String name) {
+        return "Hello, " + name + "!";
+    }
+
     public static void main(String[] args) {
         port(8080);
 
