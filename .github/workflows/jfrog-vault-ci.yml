@@ -18,11 +18,11 @@ env:
   VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
   VAULT_JFROG_PATH: secrets/creds/jfrog
 
-  JFROG_ARTIFACTORY_URL: ${{ secrets.JFROG_ARTIFACTORY_URL }}
+  JFROG_ARTIFACTORY_URL: ${{ secrets.JFROG_URL }}
   JFROG_REPO: libs-release-local
 
 jobs:
-  build-and-sonar:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -37,20 +37,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Cache SonarCloud packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.sonar/cache
-          key: ${{ runner.os }}-sonar
-
-      - name: Build and analyze with SonarCloud
-        run: |
-          mvn -B clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-            -Dsonar.organization=${SONAR_ORGANIZATION} \
-            -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.token=${SONAR_TOKEN} \
-            -Dsonar.branch.name=main
+      - name: Build with Maven
+        run: mvn -B clean package
 
       - name: Upload jar for next jobs
         uses: actions/upload-artifact@v4
@@ -58,8 +46,51 @@ jobs:
           name: app-jar
           path: target/*.jar
 
+      - name: Upload full target for Sonar
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-target
+          path: target
+
+  sonar-scan:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Download build target
+        uses: actions/download-artifact@v4
+        with:
+          name: build-target
+          path: target
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+
+      - name: Analyze with SonarCloud
+        run: |
+          mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+            -Dsonar.organization=${SONAR_ORGANIZATION} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.token=${SONAR_TOKEN} \
+            -Dsonar.branch.name=main
+
   trivy-scan:
-    needs: build-and-sonar
+    needs: sonar-scan
     runs-on: ubuntu-latest
 
     steps:
