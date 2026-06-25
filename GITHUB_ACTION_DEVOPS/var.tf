@@ -21,12 +21,14 @@ variable "jfrog_secret_username_and_password" {
   description = "JFrog Artifactory admin username and password, e.g. [\"admin\", \"<password>\"]"
   type        = list(string)
   sensitive   = true
+  default     = ["admin", ""]
 }
 
 variable "jfrog_secret_token" {
-  description = "JFrog Artifactory access token"
+  description = "JFrog Artifactory access token (can be filled after JFrog is installed)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # Used by oidc.tf to scope the GitHub Actions OIDC role to this repo's main branch.

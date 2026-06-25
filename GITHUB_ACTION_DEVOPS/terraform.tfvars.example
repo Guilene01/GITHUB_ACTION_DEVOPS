@@ -1,18 +1,20 @@
-# Copy this file to terraform.tfvars and fill in real values.
-# terraform.tfvars contains sensitive data and should not be committed to git.
+# Copy this file to terraform.tfvars and fill in the values below.
+# terraform.tfvars contains sensitive data and must never be committed to git.
 
-aws_region                = "us-east-1"
-profile                   = "default"
-aws_instance_type_server  = "t2.large"
+# ── AWS ───────────────────────────────────────────────────────────────────────
+aws_region               = "us-east-1"  # change to your preferred region
+profile                  = "default"    # AWS CLI profile name
+aws_instance_type_server = "t2.large"
 
-# JFrog Artifactory admin credentials and access token.
-jfrog_secret_username_and_password = ["admin", "REPLACE_WITH_STRONG_PASSWORD"]
-jfrog_secret_token                 = "REPLACE_WITH_JFROG_TOKEN"
-
-# Optional: SonarCloud token (see README for how to generate one).
-# Leave empty to populate the AWS Secrets Manager secret later via the AWS CLI.
-sonarcloud_token = ""
-
-# Used to scope the GitHub Actions OIDC role to this repo's main branch.
+# ── GitHub OIDC (REQUIRED) ────────────────────────────────────────────────────
+# These scope the IAM role so only your repo's main branch can assume it via OIDC.
 github_org  = "your-github-username-or-org"
 github_repo = "your-repo-name"
+
+# ── JFrog & Vault (fill in AFTER terraform apply) ─────────────────────────────
+# JFrog Artifactory is installed on the server by Terraform — no token needed upfront.
+# After the server is running, log into the JFrog UI (:8082), set the admin password,
+# and generate an access token. Then update HashiCorp Vault manually (see README).
+#
+# jfrog_secret_username_and_password = ["admin", "your-strong-password"]
+# jfrog_secret_token                 = "your-jfrog-access-token"
