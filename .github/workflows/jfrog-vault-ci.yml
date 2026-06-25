@@ -19,7 +19,7 @@ env:
   VAULT_JFROG_PATH: secrets/creds/jfrog
 
   JFROG_ARTIFACTORY_URL: ${{ secrets.JFROG_URL }}
-  JFROG_REPO: libs-release-local
+  JFROG_REPO: example-repo-local
 
 jobs:
   build:
@@ -147,6 +147,13 @@ jobs:
           echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
           echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
 
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ env.JFROG_ARTIFACTORY_URL }}
+          JF_USER: ${{ env.JFROG_USERNAME }}
+          JF_PASSWORD: ${{ env.JFROG_PASSWORD }}
+
       - name: Publish jar to JFrog Artifactory
         run: |
           set -e
@@ -163,12 +170,10 @@ jobs:
           REPO_NAME="${{ github.event.repository.name }}"
           RUN_NUMBER="${{ github.run_number }}"
           ARTIFACT_NAME="${REPO_NAME}-${RUN_NUMBER}.jar"
+          TARGET_PATH="${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
 
-          echo "Uploading ${JAR_FILE} to JFrog..."
+          echo "Uploading ${JAR_FILE} to ${TARGET_PATH}..."
 
-          curl -fS -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
-            -T "${JAR_FILE}" \
-            "${JFROG_ARTIFACTORY_URL}/${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
+          jf rt upload "${JAR_FILE}" "${TARGET_PATH}"
 
-          echo "Uploaded to:"
-          echo "${JFROG_ARTIFACTORY_URL}/${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
+          echo "Uploaded to: ${JFROG_ARTIFACTORY_URL}/${TARGET_PATH}"
