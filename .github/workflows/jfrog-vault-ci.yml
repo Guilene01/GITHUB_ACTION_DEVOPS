@@ -1,17 +1,30 @@
-name: Build, SonarCloud scan, and publish to JFrog
+name: Build, SonarCloud scan, Trivy scan, and publish to JFrog
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
+env:
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+  SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+
+  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+  VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+  VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+  VAULT_JFROG_PATH: secrets/creds/jfrog
+
+  JFROG_ARTIFACTORY_URL: ${{ secrets.JFROG_ARTIFACTORY_URL }}
+  JFROG_REPO: libs-release-local
+
 jobs:
-  build-and-scan:
+  build-and-sonar:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,35 +44,24 @@ jobs:
           key: ${{ runner.os }}-sonar
 
       - name: Build and analyze with SonarCloud
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           mvn -B clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }} \
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+            -Dsonar.organization=${SONAR_ORGANIZATION} \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${SONAR_TOKEN} \
             -Dsonar.branch.name=main
 
-      - name: Select build jar
-        id: jarcheck
-        run: |
-          JAR_FILE=$(ls target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc' | head -1)
-          if [ -z "${JAR_FILE}" ]; then
-            echo "ERROR: no build jar found in target/"
-            exit 1
-          fi
-          echo "jar_path=${JAR_FILE}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload build artifact
+      - name: Upload jar for next jobs
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
-          path: ${{ steps.jarcheck.outputs.jar_path }}
+          path: target/*.jar
 
   trivy-scan:
-    needs: build-and-scan
+    needs: build-and-sonar
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -72,62 +74,20 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 0
 
-  validate-vault:
+  publish-to-jfrog:
     needs: trivy-scan
     runs-on: ubuntu-latest
+
     steps:
-      - name: Authenticate and fetch JFrog credentials from Vault
-        env:
-          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
-          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
-          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
-        run: |
-          set -o pipefail
-
-          VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
-
-          VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
-
-          if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
-            echo "ERROR: Vault AppRole authentication failed"
-            exit 1
-          fi
-
-          echo "::add-mask::${VAULT_TOKEN}"
-          echo "Vault AppRole authentication: OK"
-
-          JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
-
-          JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
-          JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
-
-          if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
-            echo "ERROR: Failed to fetch JFrog credentials from Vault"
-            exit 1
-          fi
-
-          echo "::add-mask::${JFROG_PASSWORD}"
-          echo "Vault secret path: OK"
-
-  publish-to-jfrog:
-    needs: validate-vault
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifact
+      - name: Download jar artifact
         uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: target
 
-      - name: Re-authenticate to Vault for JFrog credentials
-        env:
-          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
-          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
-          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+      - name: Get JFrog credentials from Vault
         run: |
-          set -o pipefail
+          set -e
 
           VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
             -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
@@ -135,20 +95,20 @@ jobs:
           VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
 
           if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
-            echo "ERROR: Vault AppRole authentication failed"
+            echo "ERROR: Vault authentication failed"
             exit 1
           fi
 
           echo "::add-mask::${VAULT_TOKEN}"
 
           JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
+            "${VAULT_ADDR}/v1/${VAULT_JFROG_PATH}")
 
           JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
           JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
 
           if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
-            echo "ERROR: Failed to fetch JFrog credentials from Vault"
+            echo "ERROR: Failed to get JFrog username from Vault"
             exit 1
           fi
 
@@ -156,10 +116,10 @@ jobs:
           echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
           echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
 
-      - name: Publish artifact to JFrog
-        env:
-          JFROG_URL: ${{ secrets.JFROG_URL }}
+      - name: Publish jar to JFrog Artifactory
         run: |
+          set -e
+
           ls -lah target
 
           JAR_FILE=$(ls target/*.jar | grep -v -E 'sources|javadoc' | head -1)
@@ -170,9 +130,14 @@ jobs:
           fi
 
           REPO_NAME="${{ github.event.repository.name }}"
+          RUN_NUMBER="${{ github.run_number }}"
+          ARTIFACT_NAME="${REPO_NAME}-${RUN_NUMBER}.jar"
 
-          echo "Uploading $JAR_FILE to JFrog..."
+          echo "Uploading ${JAR_FILE} to JFrog..."
 
-          curl -v -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
+          curl -fS -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
             -T "${JAR_FILE}" \
-            "${JFROG_URL}/artifactory/libs-release-local/${REPO_NAME}/${{ github.run_number }}/${REPO_NAME}-${{ github.run_number }}.jar"
+            "${JFROG_ARTIFACTORY_URL}/${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
+
+          echo "Uploaded to:"
+          echo "${JFROG_ARTIFACTORY_URL}/${JFROG_REPO}/${REPO_NAME}/${RUN_NUMBER}/${ARTIFACT_NAME}"
