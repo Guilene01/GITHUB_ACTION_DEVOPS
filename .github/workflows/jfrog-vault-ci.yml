@@ -10,6 +10,8 @@ permissions:
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,23 +40,45 @@ jobs:
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${SONAR_TOKEN}
 
+      - name: Select build jar
+        id: jarcheck
+        run: |
+          JAR_FILE=$(ls target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc' | head -1)
+          if [ -z "${JAR_FILE}" ]; then
+            echo "ERROR: no build jar found in target/ (build may have failed or skipped packaging)"
+            exit 1
+          fi
+          echo "jar_path=${JAR_FILE}" >> "$GITHUB_OUTPUT"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
-          path: target/*.jar
+          path: ${{ steps.jarcheck.outputs.jar_path }}
 
-  publish-to-jfrog:
+  trivy-scan:
     needs: build-and-scan
     runs-on: ubuntu-latest
     steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: target
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Fetch JFrog credentials from Vault
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: 1
+
+  validate-vault:
+    needs: trivy-scan
+    runs-on: ubuntu-latest
+    outputs:
+      jfrog_username: ${{ steps.vault.outputs.username }}
+    steps:
+      - name: Authenticate and fetch JFrog credentials from Vault
+        id: vault
         env:
           VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
           VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
@@ -63,20 +87,71 @@ jobs:
           set -o pipefail
 
           VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}") || {
+            echo "ERROR: Vault AppRole login request failed (network/HTTP error)"; exit 1; }
+
           VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
           if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
             echo "ERROR: Vault AppRole authentication failed — check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID secrets"
             exit 1
           fi
           echo "::add-mask::${VAULT_TOKEN}"
+          echo "Vault AppRole authentication: OK"
 
           JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog") || {
+            echo "ERROR: Vault request to secrets/creds/jfrog failed (network/HTTP error)"; exit 1; }
+
           JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
           JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
           if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
             echo "ERROR: Failed to fetch JFrog credentials from Vault path secrets/creds/jfrog"
+            exit 1
+          fi
+          echo "::add-mask::${JFROG_PASSWORD}"
+          echo "Vault secret path: OK"
+
+          echo "username=${JFROG_USERNAME}" >> "$GITHUB_OUTPUT"
+          echo "JFROG_USERNAME=${JFROG_USERNAME}" >> "$GITHUB_ENV"
+          echo "JFROG_PASSWORD=${JFROG_PASSWORD}" >> "$GITHUB_ENV"
+
+  publish-to-jfrog:
+    needs: validate-vault
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Re-authenticate to Vault for JFrog credentials
+        env:
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+        run: |
+          set -o pipefail
+
+          VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
+            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}") || {
+            echo "ERROR: Vault AppRole login request failed"; exit 1; }
+
+          VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
+          if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
+            echo "ERROR: Vault AppRole authentication failed"
+            exit 1
+          fi
+          echo "::add-mask::${VAULT_TOKEN}"
+
+          JFROG_CREDS=$(curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+            "${VAULT_ADDR}/v1/secrets/creds/jfrog") || {
+            echo "ERROR: Vault request to secrets/creds/jfrog failed"; exit 1; }
+
+          JFROG_USERNAME=$(echo "${JFROG_CREDS}" | jq -r .data.username)
+          JFROG_PASSWORD=$(echo "${JFROG_CREDS}" | jq -r .data.password)
+          if [ -z "${JFROG_USERNAME}" ] || [ "${JFROG_USERNAME}" = "null" ]; then
+            echo "ERROR: Failed to fetch JFrog credentials from Vault"
             exit 1
           fi
           echo "::add-mask::${JFROG_PASSWORD}"
@@ -88,34 +163,8 @@ jobs:
         env:
           JFROG_URL: ${{ secrets.JFROG_URL }}
         run: |
-          curl -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
-            -T target/*.jar \
-            "${JFROG_URL}/artifactory/libs-release-local/${{ github.repository }}-${{ github.run_number }}.jar"
-
-  validate-vault:
-    needs: build-and-scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate and verify Vault secret path
-        env:
-          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
-          VAULT_ROLE_ID: ${{ secrets.VAULT_ROLE_ID }}
-          VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
-        run: |
-          set -o pipefail
-
-          VAULT_RESPONSE=$(curl -sf -X POST "${VAULT_ADDR}/v1/auth/approle/login" \
-            -d "{\"role_id\":\"${VAULT_ROLE_ID}\",\"secret_id\":\"${VAULT_SECRET_ID}\"}")
-          VAULT_TOKEN=$(echo "${VAULT_RESPONSE}" | jq -r .auth.client_token)
-          if [ -z "${VAULT_TOKEN}" ] || [ "${VAULT_TOKEN}" = "null" ]; then
-            echo "ERROR: Vault AppRole authentication failed — check VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID secrets"
-            exit 1
-          fi
-          echo "::add-mask::${VAULT_TOKEN}"
-          echo "Vault AppRole authentication: OK"
-
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "X-Vault-Token: ${VAULT_TOKEN}" \
-            "${VAULT_ADDR}/v1/secrets/creds/jfrog")
-          echo "secrets/creds/jfrog HTTP status: ${STATUS}"
-          [ "${STATUS}" = "200" ] && echo "Vault secret path: OK" || (echo "Vault secret path: FAILED" && exit 1)
+          JAR_FILE=$(ls target/*.jar | grep -v -E 'sources|javadoc' | head -1)
+          REPO_NAME="${{ github.event.repository.name }}"
+          curl -sf -u "${JFROG_USERNAME}:${JFROG_PASSWORD}" \
+            -T "${JAR_FILE}" \
+            "${JFROG_URL}/artifactory/libs-release-local/${REPO_NAME}/${{ github.run_number }}/${REPO_NAME}-${{ github.run_number }}.jar"
