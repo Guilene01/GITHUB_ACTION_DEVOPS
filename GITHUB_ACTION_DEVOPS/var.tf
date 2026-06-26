@@ -21,7 +21,7 @@ variable "jfrog_secret_username_and_password" {
   description = "JFrog Artifactory admin username and password, e.g. [\"admin\", \"<password>\"]"
   type        = list(string)
   sensitive   = true
-  default     = ["admin", ""]
+  default     = ["admin", "Devops1234"]
 }
 
 variable "jfrog_secret_token" {
@@ -34,10 +34,12 @@ variable "jfrog_secret_token" {
 # Used by oidc.tf to scope the GitHub Actions OIDC role to this repo's main branch.
 variable "github_org" {
   description = "Your GitHub username or organization (e.g. \"octocat\")"
+  default = " "
   type        = string
 }
 
 variable "github_repo" {
   description = "The repository that will run the GitHub Actions workflow (e.g. \"my-app\")"
+  default = " "
   type        = string
 }
